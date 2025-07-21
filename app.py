@@ -2,6 +2,8 @@ from flask import Flask, request, jsonify, send_file
 import requests
 import os
 import re
+import subprocess
+import tempfile
 from datetime import datetime
 import logging
 from dotenv import load_dotenv
@@ -35,6 +37,89 @@ def clean_filename(title):
         title = title.replace(char, '')
     return title[:100]  # Limit filename length
 
+def find_ffmpeg():
+    """Find FFmpeg executable in system PATH or common locations."""
+    # Try common FFmpeg command names
+    ffmpeg_commands = ['ffmpeg', 'ffmpeg.exe']
+    
+    for cmd in ffmpeg_commands:
+        try:
+            result = subprocess.run([cmd, '-version'], capture_output=True, check=True, timeout=10)
+            if result.returncode == 0:
+                logger.info(f"Found FFmpeg: {cmd}")
+                return cmd
+        except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+            continue
+    
+    # Try common Windows installation paths
+    common_paths = [
+        r'C:\ffmpeg\bin\ffmpeg.exe',
+        r'C:\Program Files\ffmpeg\bin\ffmpeg.exe',
+        r'C:\Program Files (x86)\ffmpeg\bin\ffmpeg.exe',
+        os.path.expanduser(r'~\ffmpeg\bin\ffmpeg.exe'),
+    ]
+    
+    for path in common_paths:
+        if os.path.exists(path):
+            try:
+                result = subprocess.run([path, '-version'], capture_output=True, check=True, timeout=10)
+                if result.returncode == 0:
+                    logger.info(f"Found FFmpeg at: {path}")
+                    return path
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                continue
+    
+    logger.error("FFmpeg not found in PATH or common locations")
+    return None
+
+def check_ffmpeg():
+    """Check if FFmpeg is available."""
+    return find_ffmpeg() is not None
+
+def convert_to_mp3(input_file, output_file):
+    """Convert audio file to MP3 format using FFmpeg."""
+    try:
+        # Find FFmpeg executable
+        ffmpeg_cmd = find_ffmpeg()
+        if not ffmpeg_cmd:
+            logger.error("FFmpeg executable not found")
+            return False
+        
+        # FFmpeg command to convert to MP3 with good quality
+        cmd = [
+            ffmpeg_cmd,
+            '-i', input_file,
+            '-codec:a', 'libmp3lame',
+            '-b:a', '192k',  # 192 kbps bitrate for good quality
+            '-ac', '2',      # Stereo output
+            '-ar', '44100',  # Sample rate
+            '-y',            # Overwrite output file if it exists
+            output_file
+        ]
+        
+        logger.info(f"Starting FFmpeg conversion...")
+        logger.info(f"Input file: {input_file} (Size: {os.path.getsize(input_file)} bytes)")
+        logger.info(f"Output file: {output_file}")
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        
+        if result.returncode == 0:
+            logger.info(f"FFmpeg conversion completed successfully")
+            logger.info(f"Output file size: {os.path.getsize(output_file)} bytes")
+            return True
+        else:
+            logger.error(f"FFmpeg conversion failed with return code {result.returncode}")
+            logger.error(f"FFmpeg stderr: {result.stderr}")
+            logger.error(f"FFmpeg stdout: {result.stdout}")
+            return False
+            
+    except subprocess.TimeoutExpired:
+        logger.error("FFmpeg conversion timed out (5 minutes)")
+        return False
+    except Exception as e:
+        logger.error(f"Error during conversion: {str(e)}")
+        return False
+
 @app.route('/')
 def index():
     return send_file('templates/index.html')
@@ -42,6 +127,14 @@ def index():
 @app.route('/convert', methods=['POST'])
 def convert():
     try:
+        # Check if FFmpeg is available
+        if not check_ffmpeg():
+            logger.error("FFmpeg not found in system PATH or common locations")
+            ffmpeg_cmd = find_ffmpeg()
+            if ffmpeg_cmd:
+                logger.info(f"But found FFmpeg at: {ffmpeg_cmd}")
+            return jsonify({'error': 'FFmpeg is required for MP3 conversion but not found. Please ensure FFmpeg is installed and accessible.'}), 500
+
         data = request.get_json()
         youtube_url = data.get('url')
         if not youtube_url:
@@ -154,40 +247,95 @@ def convert():
         # Log selected audio format
         logger.info(f"Selected audio format: {selected_audio.get('mimeType')} ({selected_audio.get('extension')}) - {selected_audio.get('sizeText')}")
 
-        # Step 2: Download and save the audio file
-        # Determine the correct file extension
-        extension = selected_audio.get('extension', 'mp3')
-        if extension == 'm4a':
-            # M4A is essentially MP4 audio, we can rename it to mp3 for compatibility
-            # or keep as m4a - let's keep the original extension for now
-            filename = f"{title}.{extension}"
-        else:
-            filename = f"{title}.mp3"
-        file_path = os.path.join(DOWNLOAD_DIR, filename)
+        # Step 2: Download the audio file
+        original_extension = selected_audio.get('extension', 'mp3')
         
-        logger.info(f"Starting download of audio file: {filename}")
-        audio_response = requests.get(download_url, stream=True)
-        audio_response.raise_for_status()
+        # Create temporary file for the original download
+        temp_file = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=f'.{original_extension}', delete=False) as tf:
+                temp_file = tf.name
+            
+            logger.info(f"Downloading audio to temporary file: {temp_file}")
+            audio_response = requests.get(download_url, stream=True)
+            audio_response.raise_for_status()
 
-        with open(file_path, 'wb') as f:
-            for chunk in audio_response.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
+            with open(temp_file, 'wb') as f:
+                for chunk in audio_response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
 
-        # Verify file exists and is not empty
-        if not os.path.exists(file_path):
-            logger.error(f"Audio file not found at {file_path}")
-            return jsonify({'error': 'Failed to generate audio file'}), 500
-        if os.path.getsize(file_path) == 0:
-            logger.error(f"Generated audio file is empty: {file_path}")
-            os.remove(file_path)
-            return jsonify({'error': 'Generated audio file is empty'}), 500
+            # Verify downloaded file exists and is not empty
+            if not os.path.exists(temp_file):
+                logger.error(f"Downloaded file not found at {temp_file}")
+                return jsonify({'error': 'Failed to download audio file'}), 500
+            if os.path.getsize(temp_file) == 0:
+                logger.error(f"Downloaded file is empty: {temp_file}")
+                return jsonify({'error': 'Downloaded audio file is empty'}), 500
 
-        logger.info(f"Successfully downloaded: {filename} ({os.path.getsize(file_path)} bytes)")
-        return jsonify({
-            'download_url': f'/download/{filename}',
-            'title': title
-        })
+            # Step 3: Convert to MP3 (always use .mp3 extension)
+            mp3_filename = f"{title}.mp3"
+            mp3_file_path = os.path.join(DOWNLOAD_DIR, mp3_filename)
+            
+            if original_extension.lower() == 'mp3':
+                # If already MP3, just move the file
+                logger.info("File is already MP3, moving to downloads directory")
+                import shutil
+                shutil.move(temp_file, mp3_file_path)
+                temp_file = None  # Prevent cleanup since we moved the file
+                logger.info(f"Moved MP3 file to: {mp3_file_path}")
+            else:
+                # Convert to MP3 using FFmpeg
+                logger.info(f"Converting {original_extension} to MP3: {mp3_filename}")
+                if not convert_to_mp3(temp_file, mp3_file_path):
+                    return jsonify({'error': 'Failed to convert audio to MP3 format'}), 500
+                
+                # Remove temporary file after successful conversion
+                try:
+                    os.remove(temp_file)
+                    logger.info(f"Removed temporary file: {temp_file}")
+                    temp_file = None  # Prevent cleanup in finally block
+                except Exception as e:
+                    logger.warning(f"Failed to remove temporary file {temp_file}: {e}")
+
+            # Verify final MP3 file exists and is not empty
+            if not os.path.exists(mp3_file_path):
+                logger.error(f"MP3 file not found at {mp3_file_path}")
+                return jsonify({'error': 'Failed to generate MP3 file'}), 500
+            if os.path.getsize(mp3_file_path) == 0:
+                logger.error(f"Generated MP3 file is empty: {mp3_file_path}")
+                os.remove(mp3_file_path)
+                return jsonify({'error': 'Generated MP3 file is empty'}), 500
+
+            logger.info(f"Successfully created MP3: {mp3_filename} ({os.path.getsize(mp3_file_path)} bytes)")
+            return jsonify({
+                'download_url': f'/download/{mp3_filename}',
+                'title': title
+            })
+
+        finally:
+            # Clean up temporary file if it still exists
+            if temp_file and os.path.exists(temp_file):
+                try:
+                    os.remove(temp_file)
+                    logger.info(f"Cleaned up temporary file: {temp_file}")
+                except Exception as e:
+                    logger.warning(f"Failed to clean up temporary file {temp_file}: {e}")
+            
+            # Also clean up any other temporary files that might be left behind
+            try:
+                temp_dir = tempfile.gettempdir()
+                for filename in os.listdir(temp_dir):
+                    if filename.startswith('tmp') and (filename.endswith('.m4a') or filename.endswith('.mp3') or filename.endswith('.webm')):
+                        temp_path = os.path.join(temp_dir, filename)
+                        # Only remove files older than 5 minutes to avoid interfering with other processes
+                        if os.path.isfile(temp_path):
+                            file_age = datetime.now().timestamp() - os.path.getmtime(temp_path)
+                            if file_age > 300:  # 5 minutes
+                                os.remove(temp_path)
+                                logger.info(f"Cleaned up old temporary audio file: {filename}")
+            except Exception as e:
+                logger.warning(f"Error during temp directory cleanup: {e}")
 
     except requests.exceptions.RequestException as e:
         logger.error(f"Request error: {str(e)}")

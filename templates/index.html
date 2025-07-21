@@ -55,6 +55,10 @@
         button:hover {
             background-color: #cc0000;
         }
+        button:disabled {
+            background-color: #999;
+            cursor: not-allowed;
+        }
         p {
             margin-top: 20px;
             color: #333;
@@ -65,6 +69,16 @@
         }
         a:hover {
             text-decoration: underline;
+        }
+        .success-message {
+            color: #28a745;
+            font-weight: bold;
+            margin-top: 15px;
+        }
+        .error-message {
+            color: #dc3545;
+            font-weight: bold;
+            margin-top: 15px;
         }
     </style>
 </head>
@@ -81,15 +95,34 @@
             <div>
                 <p><b>Please wait for 20-30 seconds after clicking the download button</b></p>
             </div>
+            <div id="message-container"></div>
         </form>
     </div>
     <script>
+        let isConverting = false; // Prevent multiple simultaneous conversions
+
         document.getElementById('form').addEventListener('submit', async (e) => {
             e.preventDefault();
-            const url = document.getElementById('url').value;
+            
+            // Prevent multiple submissions
+            if (isConverting) {
+                return;
+            }
+            
+            const url = document.getElementById('url').value.trim();
+            if (!url) {
+                showMessage('Please enter a YouTube URL', 'error');
+                return;
+            }
+            
             const convertBtn = document.getElementById('convert-btn');
+            const messageContainer = document.getElementById('message-container');
+            
+            // Set converting state
+            isConverting = true;
             convertBtn.disabled = true;
             convertBtn.textContent = 'Converting...';
+            messageContainer.innerHTML = '';
 
             try {
                 const response = await fetch('/convert', {
@@ -100,18 +133,50 @@
                 const result = await response.json();
 
                 if (response.ok) {
+                    // Create and trigger download
                     const downloadLink = document.createElement('a');
                     downloadLink.href = result.download_url;
                     downloadLink.download = result.title + '.mp3';
+                    downloadLink.style.display = 'none'; // Hide the link
+                    
+                    // Add to DOM, click, then remove immediately
+                    document.body.appendChild(downloadLink);
                     downloadLink.click();
+                    document.body.removeChild(downloadLink);
+                    
+                    showMessage(`Download started: ${result.title}`, 'success');
+                    
+                    // Clear the input field after successful conversion
+                    document.getElementById('url').value = '';
                 } else {
-                    alert(result.error || 'Something went wrong');
+                    showMessage(result.error || 'Something went wrong', 'error');
                 }
             } catch (error) {
-                alert('Error: ' + error.message);
+                showMessage('Network error: ' + error.message, 'error');
             } finally {
+                // Reset button state
+                isConverting = false;
                 convertBtn.disabled = false;
                 convertBtn.textContent = 'Download!';
+            }
+        });
+
+        function showMessage(text, type) {
+            const messageContainer = document.getElementById('message-container');
+            messageContainer.innerHTML = `<p class="${type}-message">${text}</p>`;
+            
+            // Auto-clear success messages after 5 seconds
+            if (type === 'success') {
+                setTimeout(() => {
+                    messageContainer.innerHTML = '';
+                }, 5000);
+            }
+        }
+
+        // Prevent form submission when Enter is pressed multiple times
+        document.getElementById('url').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && isConverting) {
+                e.preventDefault();
             }
         });
     </script>
