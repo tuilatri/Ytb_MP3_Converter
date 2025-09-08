@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" rel="stylesheet">
     <link href="https://fonts.cdnfonts.com/css/times-new-roman" rel="stylesheet">
-    <link rel="stylesheet" href="/static/css/styles.css">
-    <link rel="icon" href="/static/images/youtube2mp3icon.png" type="image/x-icon">
+    <!-- Icon đã bị lỗi 404, bạn có thể thêm lại file icon vào đúng đường dẫn nếu muốn -->
+    <!-- <link rel="icon" href="/static/images/youtube2mp3icon.png" type="image/x-icon"> -->
     <title>YT2MP3 Magic</title>
     <style>
         body {
@@ -25,6 +25,8 @@
             padding: 20px;
             border-radius: 10px;
             box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            width: 90%;
+            max-width: 500px;
         }
         h1 {
             color: #ff0000;
@@ -35,9 +37,14 @@
             color: #333;
             margin-bottom: 20px;
         }
+        .input-container {
+            display: flex;
+            gap: 10px;
+        }
         input[type="text"] {
             padding: 10px;
-            width: 300px;
+            width: 100%;
+            flex-grow: 1;
             border: 1px solid #ccc;
             border-radius: 5px;
             font-size: 1em;
@@ -50,7 +57,6 @@
             border-radius: 5px;
             cursor: pointer;
             font-size: 1em;
-            margin-left: 10px;
         }
         button:hover {
             background-color: #cc0000;
@@ -85,11 +91,11 @@
 <body>
     <div class="top-container">
         <form id="form">
-            <p>by <a href="https://www.linkedin.com/in/your-linkedin-profile">Your Name</a></p>
+            <p>by <a href="#">Your Name</a></p>
             <h1><i class="fa-brands fa-youtube"></i> Youtube to MP3 Magic</h1>
             <h4>Enter Video URL</h4>
-            <div>
-                <input type="text" id="url" name="url" placeholder="Video goes here">
+            <div class="input-container">
+                <input type="text" id="url" name="url" placeholder="Video goes here" required>
                 <button type="submit" id="convert-btn">Download!</button>
             </div>
             <div>
@@ -104,7 +110,6 @@
         document.getElementById('form').addEventListener('submit', async (e) => {
             e.preventDefault();
             
-            // Prevent multiple submissions
             if (isConverting) {
                 return;
             }
@@ -118,7 +123,6 @@
             const convertBtn = document.getElementById('convert-btn');
             const messageContainer = document.getElementById('message-container');
             
-            // Set converting state
             isConverting = true;
             convertBtn.disabled = true;
             convertBtn.textContent = 'Converting...';
@@ -133,20 +137,12 @@
                 const result = await response.json();
 
                 if (response.ok) {
-                    // Create and trigger download
-                    const downloadLink = document.createElement('a');
-                    downloadLink.href = result.download_url;
-                    downloadLink.download = result.title + '.mp3';
-                    downloadLink.style.display = 'none'; // Hide the link
-                    
-                    // Add to DOM, click, then remove immediately
-                    document.body.appendChild(downloadLink);
-                    downloadLink.click();
-                    document.body.removeChild(downloadLink);
+                    // **FIXED:** Use a more reliable method to trigger the download.
+                    // The server will now send the correct headers to name the file.
+                    window.location.href = result.download_url;
                     
                     showMessage(`Download started: ${result.title}`, 'success');
                     
-                    // Clear the input field after successful conversion
                     document.getElementById('url').value = '';
                 } else {
                     showMessage(result.error || 'Something went wrong', 'error');
@@ -165,15 +161,15 @@
             const messageContainer = document.getElementById('message-container');
             messageContainer.innerHTML = `<p class="${type}-message">${text}</p>`;
             
-            // Auto-clear success messages after 5 seconds
             if (type === 'success') {
                 setTimeout(() => {
-                    messageContainer.innerHTML = '';
+                    if (messageContainer.querySelector(`.${type}-message`)?.textContent === text) {
+                       messageContainer.innerHTML = '';
+                    }
                 }, 5000);
             }
         }
 
-        // Prevent form submission when Enter is pressed multiple times
         document.getElementById('url').addEventListener('keydown', (e) => {
             if (e.key === 'Enter' && isConverting) {
                 e.preventDefault();
